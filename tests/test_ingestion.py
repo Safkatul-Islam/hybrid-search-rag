@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from src.ingestion.chunker import chunk_document
-from src.ingestion.loader import load
+from src.ingestion.loader import load, load_bytes
 
 
 def test_load_text_file(sample_text_file):
@@ -41,6 +41,31 @@ def test_empty_file_raises(tmp_path):
     empty.write_bytes(b"")
     with pytest.raises(ValueError):
         load(empty)
+
+
+def test_load_bytes_text_uses_given_source_title():
+    doc = load_bytes(b"Some internal note about onboarding.", source_title="note.md")
+    assert doc.source_title == "note.md"
+    assert doc.pages[0].text.startswith("Some internal note")
+
+
+def test_load_bytes_matches_load_for_the_same_content(sample_text_file):
+    from_disk = load(sample_text_file)
+    from_bytes = load_bytes(
+        sample_text_file.read_bytes(), source_title=sample_text_file.name
+    )
+    # Same bytes -> same deterministic document id.
+    assert from_bytes.document_id == from_disk.document_id
+
+
+def test_load_bytes_unsupported_suffix_raises():
+    with pytest.raises(ValueError):
+        load_bytes(b"a,b,c", source_title="data.csv")
+
+
+def test_load_bytes_empty_raises():
+    with pytest.raises(ValueError):
+        load_bytes(b"", source_title="empty.txt")
 
 
 def test_chunking_is_stable_across_reingest(sample_text_file):
