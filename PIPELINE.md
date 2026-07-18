@@ -1,5 +1,9 @@
 # System Pipeline
 
+Entry points: `POST /ingest` drives the ingestion flow (from uploaded bytes);
+`POST /query` drives the query flow. Both are thin wrappers over the services
+below.
+
 ## Ingestion
 
 ```
