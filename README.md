@@ -10,9 +10,9 @@ flow, and `DECISIONS.md` for the record of choices made.
 
 ## Status
 
-**Batch 4a (current): Cohere reranking.**
+**v1 complete: full RAG pipeline behind an HTTP API.**
 
-Implemented so far:
+Implemented:
 
 - `Chunk` model with deterministic `document_id` / `chunk_id` (`src/models/chunk.py`)
 - PDF + text/Markdown loading (`src/ingestion/loader.py`)
@@ -25,10 +25,19 @@ Implemented so far:
 - Dense retrieval, reciprocal rank fusion, and a hybrid retriever
   (`src/retrieval/dense.py`, `fusion.py`, `hybrid.py`)
 - Cohere reranker with visible, leak-free failure (`src/reranking/reranker.py`)
+- Claude LLM transport — `claude-sonnet-5`, isolated behind `messages.create`
+  (`src/llm/client.py`)
+- Grounded answer generation: numbered-context prompt, citation parse/validate,
+  and safe fallback (`src/prompts/templates.py`, `src/generation/`)
+- End-to-end query service: retrieve → resolve → rerank → generate, with
+  surfaced rerank-degrade and citation flags (`src/services/query_service.py`)
+- FastAPI app: `GET /health`, `POST /query`, `POST /ingest` (multipart upload
+  with filename sanitization, extension allowlist, size cap, and immediate BM25
+  refresh), with boundary validation and safe error mapping (`src/api/`, `main.py`)
 - Centralized settings (`src/config.py`)
 
-Not yet built (later batches): Claude answer generation + citation validation
-(4b), and the FastAPI layer.
+Possible next steps (out of scope for v1): auth / rate limiting, async ingest for
+very large files, OCR, and horizontal scaling of the in-memory BM25 index.
 
 ## Live provider tests
 
@@ -58,6 +67,15 @@ python -m venv .venv
 cp .env.example .env   # then fill in values as later batches need them
 ```
 
+`pyproject.toml` holds the direct dependencies (with `>=` floors);
+`requirements.lock` pins the full resolved tree that the project was built and
+live-tested against. For a reproducible / CI install, use the lock instead:
+
+```bash
+.venv\Scripts\python -m pip install -r requirements.lock
+.venv\Scripts\python -m pip install -e . --no-deps   # add the local package
+```
+
 ## Running checks
 
 ```bash
@@ -65,20 +83,43 @@ cp .env.example .env   # then fill in values as later batches need them
 .venv\Scripts\python -m ruff check .
 ```
 
+## Running the API
+
+The server builds the real providers on startup, so the provider keys must be
+set in `.env` (`COHERE_API_KEY`, `PINECONE_API_KEY`, `ANTHROPIC_API_KEY`) first.
+
+```bash
+.venv\Scripts\python -m uvicorn main:app --reload
+```
+
+- `GET /health` → `{"status": "ok"}`
+- `POST /ingest` (multipart `file`, PDF/txt/md) → `{document_id, source_title, chunk_count}`
+- `POST /query` with `{"question": "..."}` → answer + citations
+- Interactive docs at `http://127.0.0.1:8000/docs`
+
+```bash
+# ingest a document, then ask a question
+curl -F "file=@handbook.pdf" http://127.0.0.1:8000/ingest
+curl -H "Content-Type: application/json" \
+  -d '{"question": "what is the leave policy?"}' http://127.0.0.1:8000/query
+```
+
 ## Configuration
 
 Settings load from environment variables / `.env` (see `.env.example`). Secrets
-never live in source. Provider keys are documented but unused until their batch.
+never live in source.
 
-## Known limitations (Batch 4a)
+## Known limitations (v1)
 
 - Only PDF and text/Markdown are supported; no OCR or complex formats.
 - PDF text extraction quality depends on the source PDF (no OCR fallback).
-- Ingestion is synchronous; very large files are not chunked in the background.
-- The pieces exist through reranking, but they are not yet wired into a single
-  query path: resolving fused `chunk_id`s to text, answer generation with
-  citations, and the API arrive in later batches.
-- Reranking surfaces failure as a typed error; the degrade-vs-abort policy is
-  decided by the (not-yet-built) query service.
+- Ingestion is synchronous with a ~10 MB per-file cap; very large files are not
+  processed in the background.
+- Single-process: the BM25 index is in memory and refreshed via an atomic swap
+  after ingest — correct for one process, not shared across workers.
+- No auth or rate limiting on the API yet; not hardened for hostile public load.
+- On rerank failure the service degrades to fusion order and flags
+  `rerank_failed`; hallucinated citations are flagged in
+  `invalid_citation_numbers` and the answer is kept (no hard reject).
 - Pinecone serverless upserts are eventually consistent; a query immediately
   after indexing may briefly not see the newest vectors.
