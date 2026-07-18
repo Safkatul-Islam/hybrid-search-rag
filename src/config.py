@@ -22,6 +22,7 @@ _BLANK_TO_DEFAULT = (
     "pinecone_index_name",
     "pinecone_cloud",
     "pinecone_region",
+    "anthropic_model",
 )
 
 
@@ -62,6 +63,13 @@ class Settings(BaseSettings):
     pinecone_region: str = "us-east-1"
     vector_upsert_batch_size: int = 100
 
+    # Answer generation (Anthropic Claude). API key is optional so the app
+    # imports without it; it is only required for live generation calls.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-5"
+    anthropic_max_tokens: int = 1024
+    anthropic_timeout: float = 60.0
+
     # Retrieval
     bm25_top_n: int = 20
     dense_top_n: int = 20
@@ -69,6 +77,10 @@ class Settings(BaseSettings):
     # default); fusion_top_n is the size of the fused ranking handed downstream.
     rrf_k: int = 60
     fusion_top_n: int = 20
+
+    # API boundary
+    max_query_length: int = 2000
+    max_upload_bytes: int = 10_000_000  # ~10 MB per uploaded document
 
     @field_validator(*_BLANK_TO_DEFAULT, mode="before")
     @classmethod
