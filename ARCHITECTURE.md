@@ -7,6 +7,8 @@ file (marked **← swap point**), so replacing a provider means changing one pla
 p-2/
 ├── README.md
 ├── pyproject.toml               # deps + ruff/pytest config
+├── requirements.lock            # pinned full dependency tree (reproducible install)
+├── main.py                      # uvicorn entrypoint (main:app)
 ├── .env.example                 # documents settings; real .env is gitignored
 ├── .gitignore
 ├── DECISIONS.md / PIPELINE.md / PROJECT_BRIEF.md
@@ -23,7 +25,8 @@ p-2/
 │   │   ├── chunk_store.py       # SQLite canonical store (source of truth)
 │   │   └── vector_store.py      # Pinecone (embed-v4.0 dim, cosine)  ← swap point
 │   ├── services/
-│   │   └── indexing_service.py  # load→chunk→SQLite→embed→Pinecone; rebuild BM25
+│   │   ├── indexing_service.py  # load→chunk→SQLite→embed→Pinecone; rebuild BM25
+│   │   └── query_service.py     # retrieve→resolve→rerank→generate (end to end)
 │   ├── retrieval/
 │   │   ├── dense.py             # embed query → vector_store query
 │   │   ├── bm25.py              # rank_bm25 (rebuilds from chunk_store)
@@ -32,15 +35,16 @@ p-2/
 │   ├── reranking/
 │   │   └── reranker.py          # Cohere rerank (v4.0-pro)      ← swap point
 │   ├── generation/
-│   │   ├── generator.py         # RAG answer logic                           [planned]
-│   │   └── citations.py         # numbered-citation parse + validate         [planned]
+│   │   ├── generator.py         # RAG answer logic + safe fallback
+│   │   └── citations.py         # numbered-citation parse + validate
 │   ├── llm/
-│   │   └── client.py            # Claude transport             ← swap point   [planned]
+│   │   └── client.py            # Claude transport (sonnet-5)   ← swap point
 │   ├── prompts/
-│   │   └── templates.py         # answer prompt + citation instructions      [planned]
+│   │   └── templates.py         # answer prompt + citation instructions
 │   ├── api/
-│   │   ├── routes.py            # health, ingest, query (thin)               [planned]
-│   │   └── schemas.py           # request/response models                    [planned]
+│   │   ├── app.py              # create_app factory + AppServices composition
+│   │   ├── routes.py           # health, query, ingest (thin)
+│   │   └── schemas.py           # request/response models
 │   └── utils/                   # only when something is genuinely shared     [planned]
 └── tests/
 ```
