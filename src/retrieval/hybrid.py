@@ -44,3 +44,11 @@ class HybridRetriever:
             k=self._rrf_k,
             top_n=self._fusion_top_n,
         )
+
+    def update_bm25(self, bm25: BM25Index) -> None:
+        """Swap in a freshly-rebuilt BM25 index (e.g. after ingesting a document).
+
+        Reassigning the reference is atomic under the GIL, so a concurrent query
+        reads either the old or the new index — never a half-built one.
+        """
+        self._bm25 = bm25
