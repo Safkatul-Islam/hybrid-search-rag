@@ -46,24 +46,37 @@ def load(path: str | Path) -> LoadedDocument:
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"No such file: {p}")
+    return load_bytes(p.read_bytes(), source_title=p.name)
 
-    suffix = p.suffix.lower()
+
+def load_bytes(content: bytes, *, source_title: str) -> LoadedDocument:
+    """Load a supported document from in-memory bytes.
+
+    ``source_title`` is used only to detect the format (by suffix) and as the
+    document's display title — never as a filesystem path. Callers handling
+    untrusted uploads must pass a sanitized basename.
+
+    Raises:
+        ValueError: unsupported type, empty content, or no extractable text.
+    """
+    suffix = Path(source_title).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError(
             f"Unsupported file type '{suffix}'. Supported: {sorted(SUPPORTED_SUFFIXES)}"
         )
 
-    content = p.read_bytes()
     if not content:
-        raise ValueError(f"File is empty: {p}")
+        raise ValueError("File is empty")
 
     document_id = compute_document_id(content)
     pages = _load_pdf(content) if suffix in _PDF_SUFFIXES else _load_text(content)
 
     if not any(page.text.strip() for page in pages):
-        raise ValueError(f"No extractable text found in: {p}")
+        raise ValueError("No extractable text found")
 
-    return LoadedDocument(document_id=document_id, source_title=p.name, pages=pages)
+    return LoadedDocument(
+        document_id=document_id, source_title=source_title, pages=pages
+    )
 
 
 def _load_pdf(content: bytes) -> tuple[Page, ...]:
