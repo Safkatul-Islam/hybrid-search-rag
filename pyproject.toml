@@ -12,6 +12,10 @@ dependencies = [
     "cohere>=7.0.5",
     "rank-bm25>=0.2.2",
     "pinecone>=9.1.0",
+    "anthropic>=0.116.0",
+    "fastapi>=0.139.1",
+    "uvicorn[standard]>=0.51.0",
+    "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +41,10 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are call-in-default by design, not B008 bugs.
+extend-immutable-calls = ["fastapi.File", "fastapi.Depends", "fastapi.Query"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
