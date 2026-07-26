@@ -110,6 +110,7 @@ def build_services(settings: Settings) -> AppServices:
         reranker=reranker,
         generator=generator,
         rerank_top_n=settings.rerank_top_n,
+        rerank_score_threshold=settings.rerank_score_threshold,
     )
     indexing_service = IndexingService(
         store=store,
