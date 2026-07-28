@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     cohere_rerank_model: str = "rerank-v4.0-pro"
     rerank_top_n: int = 8
     rerank_max_tokens_per_doc: int = 4096
+    # Minimum Cohere relevance score (normalized [0, 1]) a reranked chunk must
+    # reach to be handed to the LLM. Applied after the ``rerank_top_n`` cap, so a
+    # positive value drops genuinely irrelevant survivors — not just the tail
+    # beyond the cap. Default 0.0 is a no-op (keeps every capped chunk); tune via
+    # ``RERANK_SCORE_THRESHOLD`` empirically per corpus.
+    rerank_score_threshold: float = 0.0
 
     # Vector store (Pinecone). API key is optional so the app imports without it;
     # it is only required to reach the live index. The index dimension must match
@@ -88,6 +94,14 @@ class Settings(BaseSettings):
         """A blank/whitespace env value uses the field default instead of ""."""
         if value is None or (isinstance(value, str) and not value.strip()):
             return cls.model_fields[info.field_name].default
+        return value
+
+    @field_validator("rerank_score_threshold")
+    @classmethod
+    def _threshold_in_unit_range(cls, value: float) -> float:
+        """Reject a threshold outside [0.0, 1.0] — Cohere scores are normalized."""
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("rerank_score_threshold must be within [0.0, 1.0]")
         return value
 
 
