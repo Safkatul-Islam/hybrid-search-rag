@@ -48,6 +48,7 @@ def _build(
     cohere: FakeCohereClient,
     pinecone: FakePineconeClient,
     anthropic: FakeAnthropicClient,
+    rerank_score_threshold: float = 0.0,
 ) -> QueryService:
     store = ChunkStore(tmp_path / "chunks.sqlite")
     vector_store = PineconeVectorStore(client=pinecone, dimension=8)
@@ -74,6 +75,7 @@ def _build(
         reranker=CohereReranker(client=cohere),
         generator=RagGenerator(llm=ClaudeClient(client=anthropic)),
         rerank_top_n=5,
+        rerank_score_threshold=rerank_score_threshold,
     )
 
 
@@ -171,3 +173,68 @@ def test_hallucinated_citation_surfaces_in_result(tmp_path, fake_pinecone_client
 
     assert 99 in result.invalid_citation_numbers
     assert [c.number for c in result.citations] == [1]
+
+
+def test_score_threshold_drops_sub_bar_chunks(tmp_path, fake_pinecone_client):
+    # Fake rerank scores 4 docs at 1.0 / 0.75 / 0.5 / 0.25; a 0.6 bar keeps 2.
+    cohere = FakeCohereClient()
+    anthropic = FakeAnthropicClient(text="Grounded answer [1].")
+    service = _build(
+        tmp_path,
+        chunks=_chunks(),
+        cohere=cohere,
+        pinecone=fake_pinecone_client,
+        anthropic=anthropic,
+        rerank_score_threshold=0.6,
+    )
+
+    result = service.answer("what is alpha")
+
+    assert result.is_fallback is False
+    assert result.rerank_failed is False
+    assert len(result.used_chunk_ids) == 2  # only the two >= 0.6 reached the LLM
+
+
+def test_all_below_threshold_falls_back_without_generation(
+    tmp_path, fake_pinecone_client
+):
+    # A bar above any possible score empties the ranked set -> safe decline,
+    # and no generation call is made.
+    cohere = FakeCohereClient()
+    anthropic = FakeAnthropicClient(text="should never be used")
+    service = _build(
+        tmp_path,
+        chunks=_chunks(),
+        cohere=cohere,
+        pinecone=fake_pinecone_client,
+        anthropic=anthropic,
+        rerank_score_threshold=1.01,
+    )
+
+    result = service.answer("what is alpha")
+
+    assert result.is_fallback is True
+    assert result.answer == FALLBACK_ANSWER
+    assert result.used_chunk_ids == []
+    assert anthropic.create_calls == []
+
+
+def test_threshold_not_applied_on_rerank_failure(tmp_path, fake_pinecone_client):
+    # Rerank raises: degrade to fusion order (no scores to gate), and the
+    # threshold must NOT turn a degraded-but-answerable query into a fallback.
+    cohere = FakeCohereClient(rerank_error=RuntimeError("rerank boom"))
+    anthropic = FakeAnthropicClient(text="Degraded answer [1].")
+    service = _build(
+        tmp_path,
+        chunks=_chunks(),
+        cohere=cohere,
+        pinecone=fake_pinecone_client,
+        anthropic=anthropic,
+        rerank_score_threshold=1.01,
+    )
+
+    result = service.answer("what is alpha")
+
+    assert result.rerank_failed is True
+    assert result.is_fallback is False
+    assert result.used_chunk_ids  # answered from fusion order despite the bar
