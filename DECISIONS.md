@@ -343,3 +343,35 @@ paths, or stack traces.
 rebuilding the whole `QueryService` after ingest (wasteful vs. swapping one index);
 a broad `except Exception → 502` (hides genuine bugs behind a friendly status).
 
+
+## 21. Rerank score threshold: post-cap relevance gate, off by default
+
+**Decision:** After reranking caps candidates at `rerank_top_n`, `QueryService`
+drops any survivor whose Cohere relevance score is below
+`rerank_score_threshold` (config, env `RERANK_SCORE_THRESHOLD`, validated to
+`[0.0, 1.0]`). The default is `0.0` — a no-op that keeps every capped chunk, so
+v1 behavior is unchanged until the threshold is deliberately raised. The gate
+lives in `QueryService`, alongside the existing rerank-failure and citation
+policies, rather than in the `CohereReranker` (which stays a thin provider
+wrapper returning scored results). If **every** capped chunk scores below the
+bar, the query returns the safe `FALLBACK_ANSWER` with `is_fallback=True` and
+**no generation call is made**. The threshold is applied only on the rerank
+*success* path; the rerank-failure degrade path carries no scores, so it falls
+back to fusion order unchanged.
+
+**Reason:** `rerank_top_n` is a fixed count cap, not a relevance filter — it
+drops the least-relevant tail but still forwards marginally-relevant chunks up to
+the cap. A score gate lets genuinely irrelevant text be withheld from the LLM,
+tightening grounding and saving tokens. Defaulting to `0.0` keeps the change
+risk-free: absolute rerank scores vary by query and corpus, so a non-zero
+default without empirical tuning could reject valid answers. Declining without a
+generation call when nothing clears the bar makes the code-level fallback
+reachable in production (previously only an empty retrieval triggered it) and
+avoids paying for an answer with no grounding.
+
+**Alternatives:** Filtering inside `CohereReranker` (mixes provider I/O with
+answer policy); replacing the count cap with a pure score cap (loses the bounded
+context guarantee `rerank_top_n` gives the prompt); shipping a non-zero default
+(risks silently dropping good answers before the threshold is tuned); still
+calling the LLM on an empty context and relying only on the prompt-level decline
+(wastes a call when the code already knows nothing is relevant).
