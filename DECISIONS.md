@@ -375,3 +375,157 @@ context guarantee `rerank_top_n` gives the prompt); shipping a non-zero default
 (risks silently dropping good answers before the threshold is tuned); still
 calling the LLM on an empty context and relying only on the prompt-level decline
 (wastes a call when the code already knows nothing is relevant).
+
+
+## 22. Rerank score threshold stays at 0.0 — measured, not assumed
+
+**Decision:** The `rerank_score_threshold` added in #21 ships disabled (`0.0`).
+A live measurement over the indexed corpus (`scripts/measure_rerank_scores.py`,
+17 queries against 12 chunks from 6 synthetic documents) found no threshold
+worth enabling, and adversarial testing against the live providers showed the
+gate is not needed for grounding. The tunable stays available for a real corpus
+that justifies it; re-run the script before raising it.
+
+**Reason:** The measurement produced a separation of only `0.0238` — the weakest
+answerable query scored `0.6906` while the strongest unanswerable one reached
+`0.6668`. A threshold inside that window is not a decision boundary, it is a
+coincidence: one answerable query cleared it by `0.0006`, and setting it there
+would have reduced 8 of 9 answerable queries to a single chunk, breaking the
+multi-chunk synthesis the pipeline exists for — a cross-document question about
+conflicting meal allowances ($75/day in the handbook vs $65/$90 in the travel
+policy) was answered correctly only because the rank-2 chunk survived. A lower
+"junk filter" value (~`0.25`) was rejected too: three adversarial queries
+(bereavement leave, personal-car mileage, and an off-topic control) were all
+declined correctly by the LLM, including the mileage case that scored `0.6668`
+against a chunk genuinely covering ground-transport reimbursement but silent on
+mileage. That is the central finding — **rerank relevance measures topical
+relatedness, not answerability** — so no score gate can separate "on-topic and
+answers it" from "on-topic and does not". With grounding already handled by the
+prompt-level decline, a threshold's only remaining benefit was skipping a
+generation call on obvious junk: a cost optimization weighed against converting
+a good answer into a false decline, which is this system's worst failure mode.
+
+**Scope of these numbers:** `0.6906` and `0.6668` come from 12 chunks across 6
+synthetic documents and 17 queries. They characterize that corpus only and must
+not be treated as constants. Re-run `scripts/measure_rerank_scores.py`, and
+revise its ground-truth query set, after any material change to the indexed
+documents.
+
+**Alternatives:** Enabling `0.67` as the measurement script mechanically
+suggested (rejected — a 0.0238 margin is noise, and it destroys multi-chunk
+answers); enabling ~`0.25` as a junk filter (rejected — cost benefit only,
+against an unvalidated margin on any real corpus); removing the threshold code
+entirely (rejected — it is tested, documented, and the right lever once a real
+corpus is indexed); deleting the measurement script (rejected — it is the
+reproduction method this entry depends on).
+
+
+## 23. API-key auth and rate limiting, applied by decorator not middleware
+
+**Decision:** `/query` and `/ingest` require a shared secret sent as an
+`X-API-Key` header, compared with `hmac.compare_digest` and rejected with a
+single generic 401 (`src/api/security.py`). `create_app` **raises if `API_KEY`
+is unset** — there is no unauthenticated mode. `/health` stays open so a
+liveness probe needs no credential.
+
+Rate limiting is a small in-process sliding-window limiter owned by this project
+(`src/api/rate_limit.py`), constructed **per app** in `create_app` and enforced
+as a route dependency. `/health` does not declare the dependency and is
+therefore never limited. `slowapi` was adopted and then removed; see below.
+
+**Reason:** Fail-closed auth is the only posture that cannot be misconfigured
+into silence — an operator who forgets `API_KEY` gets a startup error, not an
+open API. `compare_digest` keeps a near-miss key from being distinguishable by
+timing, and one generic message avoids confirming whether a key exists.
+
+**Why slowapi was removed.** It was adopted first, and two problems surfaced in
+sequence. `SlowAPIMiddleware` does not work on this FastAPI version:
+`app.include_router` wraps routes in an object with no `endpoint` attribute, so
+slowapi's `_find_route_handler` returns `None`, and `_should_exempt` treats a
+`None` handler as exempt. The middleware therefore **applied no limits at all,
+silently** — it failed open with no error or warning. That was caught only
+because one test asserted the fourth request over a 3/minute limit returns 429;
+two sibling tests passed *vacuously* against the broken configuration, since
+"health is exempt" and "disabling works" are trivially true when nothing is
+limited.
+
+Its decorator path does work, but binds to a module-level `Limiter` at import
+time, making the limiter and its configured limit process-global: building a
+second app in one process reconfigures the first. Neither the silent-exemption
+behavior nor the global state is acceptable for a security control, so the
+dependency was dropped along with its three transitive packages (`limits`,
+`Deprecated`, `wrapt`).
+
+**What replaced it.** ~60 lines: `parse_rate_limit` for the `"20/minute"`
+format, and a `RateLimiter` holding a per-caller deque of timestamps behind a
+`threading.Lock` — synchronous FastAPI endpoints run in a threadpool, so
+concurrent access is real. The clock is injectable, which makes window expiry
+testable without sleeping; slowapi offered no way to test that at all. The
+limit format is validated by a `Settings` validator, so a typo in `.env` is a
+startup error rather than a silently disabled limiter. `enforce_rate_limit`
+reads `app.state.rate_limiter` with no `getattr` fallback: an app without a
+limiter raises rather than serving unlimited traffic.
+
+**Alternatives:** `SlowAPIMiddleware` (rejected — fails open here, the worst
+possible failure mode for a security control); slowapi's decorator path
+(rejected — process-global state, on a code path the library itself labels
+alpha); per-user credentials or OAuth (rejected — speculative for an internal
+single-operator MVP); a token bucket instead of a sliding window (rejected —
+equivalent for this purpose, and the window is easier to reason about);
+rate limiting sized to provider capacity (rejected — conflates abuse protection
+with the retry/backoff work that belongs to provider-failure handling).
+
+
+## 24. Asynchronous ingestion, request tracing, and honest retry budgets
+
+**Decision:** `POST /ingest` validates the upload synchronously — filename,
+type, size, non-empty — then records a job and returns `202` with a `job_id`.
+Indexing runs in a FastAPI background task; callers poll
+`GET /ingest/{job_id}`. Job state lives in SQLite alongside the chunks
+(`src/services/ingest_jobs.py`). At startup, any job still `pending` or
+`running` is marked `failed` with an interrupted error.
+
+Every request gets an id, returned as `X-Request-ID` and attached to each log
+line via a contextvar (`src/api/observability.py`). Document text, questions,
+answers, and keys are never logged — enforced by test, not convention.
+
+`GET /ready` reports whether SQLite, the BM25 index, and provider configuration
+are usable, returning `503` when any check fails. `/health` remains pure
+liveness.
+
+**Reason for async:** ingestion of a large PDF is slow enough that a
+synchronous request either times out or holds a connection for a minute. The
+job record is what makes the work observable once the response no longer
+carries the result.
+
+Startup reconciliation is not optional. Background tasks die with the process,
+so without it a crash leaves jobs reading `running` forever and the status
+endpoint reports work that will never finish — worse than reporting failure,
+because it invites waiting.
+
+**Reason for the retry design:** investigation found every provider SDK already
+retries internally, with Cohere's effective default at `base_max_retries = 2`.
+The 429s seen during rerank tuning therefore happened *after* two retries: an
+SDK backoff measured in seconds cannot bridge a rate-limit window measured in
+minutes. Raising the retry count is not a fix and is not presented as one.
+
+What async ingest does enable is an **asymmetric budget**: the ingest path uses
+a larger `ingest_max_retries` because nothing is waiting on a response, while
+the query path keeps a short budget and degrades visibly (`rerank_failed`)
+rather than making a caller wait through a backoff. Two `CohereEmbedder`
+instances are constructed for exactly this reason.
+
+**Cost accepted:** jobs are not transactional with indexing. A job interrupted
+after vectors reach Pinecone but before completion leaves them indexed while the
+job reads `failed`. Re-ingesting is safe because `chunk_id` is content-derived,
+so the write upserts. Making this atomic would need a two-phase commit across
+SQLite and Pinecone, which is disproportionate here.
+
+**Alternatives:** synchronous ingest (rejected — the original problem); a task
+queue such as Celery or RQ (rejected — external infrastructure for a
+single-process MVP); keeping a synchronous mode behind a flag (rejected — two
+ingest paths is more surface than the convenience is worth); a retry wrapper or
+`tenacity` around provider calls (rejected — the SDKs already do this, and
+duplicating it would stack backoffs); `/ready` making live provider calls
+(rejected — spends rate-limit budget and lets an upstream blip pull the
+instance out of rotation).
