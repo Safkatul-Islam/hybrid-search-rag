@@ -51,11 +51,14 @@ class CohereReranker:
         model: str = "rerank-v4.0-pro",
         max_tokens_per_doc: int = 4096,
         timeout: float = 30.0,
+        max_retries: int = 2,
         client: object | None = None,
     ) -> None:
         self._model = model
         self._max_tokens_per_doc = max_tokens_per_doc
-        self._client = client or cohere.ClientV2(api_key=api_key, timeout=timeout)
+        self._client = client or cohere.ClientV2(
+            api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
 
     def rerank(
         self,
