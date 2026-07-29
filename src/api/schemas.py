@@ -46,7 +46,33 @@ class HealthResponse(BaseModel):
     status: str
 
 
-class IngestResponse(BaseModel):
-    document_id: str
+class ReadinessResponse(BaseModel):
+    """Dependency check. ``ready`` is false when any check fails."""
+
+    ready: bool
+    checks: dict[str, bool]
+
+
+class IngestJobAccepted(BaseModel):
+    """Returned by ``POST /ingest`` — the work has not run yet."""
+
+    job_id: str
+    status: str
     source_title: str
-    chunk_count: int
+
+
+class IngestJobResponse(BaseModel):
+    """Current state of a submitted ingestion.
+
+    ``document_id`` and ``chunk_count`` are populated only once the job
+    succeeds; ``error`` only when it fails.
+    """
+
+    job_id: str
+    status: str
+    source_title: str
+    created_at: str
+    updated_at: str
+    document_id: str | None = None
+    chunk_count: int | None = None
+    error: str | None = None
