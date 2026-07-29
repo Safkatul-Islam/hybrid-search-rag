@@ -31,6 +31,7 @@ class CohereEmbedder:
         dimension: int = 1024,
         batch_size: int = _MAX_BATCH,
         timeout: float = 30.0,
+        max_retries: int = 2,
         client: object | None = None,
     ) -> None:
         if not 1 <= batch_size <= _MAX_BATCH:
@@ -38,7 +39,12 @@ class CohereEmbedder:
         self._model = model
         self._dimension = dimension
         self._batch_size = batch_size
-        self._client = client or cohere.ClientV2(api_key=api_key, timeout=timeout)
+        # max_retries is the SDK's own budget; it retries transient failures and
+        # honors Retry-After, but its backoff is far shorter than a per-minute
+        # account limit, so it cannot rescue a rate-limited key.
+        self._client = client or cohere.ClientV2(
+            api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
 
     @property
     def dimension(self) -> int:
