@@ -37,11 +37,14 @@ class ClaudeClient:
         model: str = "claude-sonnet-5",
         max_tokens: int = 1024,
         timeout: float = 60.0,
+        max_retries: int = 2,
         client: object | None = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
-        self._client = client or Anthropic(api_key=api_key, timeout=timeout)
+        self._client = client or Anthropic(
+            api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
 
     def generate(self, *, system: str, user: str) -> str:
         """Return Claude's text answer for a system prompt and user message.
