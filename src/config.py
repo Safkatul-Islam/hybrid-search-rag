@@ -33,6 +33,28 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # API security. ``api_key`` has no default on purpose: ``create_app`` refuses
+    # to build an unauthenticated app, so an unset key is a startup failure
+    # rather than a silently open API. ``rate_limit`` is abuse protection only —
+    # it does not manage provider capacity (see README known limitations).
+    api_key: str = ""
+    rate_limit: str = "20/minute"
+    rate_limit_enabled: bool = True
+
+    # Observability. Request bodies, document text, and keys are never logged
+    # regardless of level (see src/api/observability).
+    log_level: str = "INFO"
+
+    # Provider retries. Every SDK retries internally already (Cohere and
+    # Anthropic both default to 2); these make the budget explicit and tunable.
+    # Retries smooth over transient blips — they cannot bridge a per-minute
+    # account rate limit, whose window is far longer than any sane backoff.
+    provider_max_retries: int = 2
+    # Ingestion runs in the background, so nobody is waiting on the response and
+    # a slower, more patient retry is worth it. The query path keeps the short
+    # budget above and degrades visibly instead of blocking a caller.
+    ingest_max_retries: int = 5
+
     # Ingestion / chunking
     chunk_size: int = 1000
     chunk_overlap: int = 200
@@ -94,6 +116,19 @@ class Settings(BaseSettings):
         """A blank/whitespace env value uses the field default instead of ""."""
         if value is None or (isinstance(value, str) and not value.strip()):
             return cls.model_fields[info.field_name].default
+        return value
+
+    @field_validator("rate_limit")
+    @classmethod
+    def _parseable_rate_limit(cls, value: str) -> str:
+        """Reject a malformed limit at startup rather than at first request.
+
+        Imported lazily: the parser lives with the limiter, and configuration
+        should not depend on the API layer at module import time.
+        """
+        from src.api.rate_limit import parse_rate_limit
+
+        parse_rate_limit(value)  # raises ValueError, which pydantic surfaces
         return value
 
     @field_validator("rerank_score_threshold")
