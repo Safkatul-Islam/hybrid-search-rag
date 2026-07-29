@@ -21,6 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
+    "pip-audit>=2.9.0",
     "ruff>=0.15.21",
 ]
 
@@ -51,3 +53,13 @@ testpaths = ["tests"]
 markers = [
     "live: live provider tests that require API keys (run with RUN_LIVE=1)",
 ]
+
+[tool.coverage.run]
+# Measure the package only; the tools under scripts/ are operator utilities,
+# not serving code, and are exercised by running them rather than by tests.
+source = ["src"]
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
